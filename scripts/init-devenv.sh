@@ -11,6 +11,111 @@ if ! command_exists git; then
     exit 1
 fi
 
+# Confirm Valkey or Redis installation
+if command_exists valkey-server; then
+    redis_command="valkey-server"
+elif command_exists redis-server; then
+    redis_command="redis-server"
+else
+    echo "Error: Neither Valkey nor Redis is installed. Please install from either https://valkey.io/download/ or https://redis.io/downloads/"
+    exit 1
+fi
+
+# Determine home directory based on the operating system
+if [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "cygwin" ]; then
+    # Windows
+    home_dir=$(eval echo %USERPROFILE%)
+elif [ "$OSTYPE" == "linux-gnu" ]; then
+    # Linux
+    home_dir="$HOME"
+elif [ "$OSTYPE" == "darwin"* ]; then
+    # macOS
+    home_dir="$HOME"
+else
+    echo "Unsupported operating system."
+    exit 1
+fi
+
+postgres_path="$home_dir/.atp-devenv/postgres"
+pg_bin_folder=""
+
+if [ ! -d "$postgres_path" ]; then
+    mkdir -p "$postgres_path"
+fi
+
+# Determine the operating system and set pg_bin_folder accordingly
+if [ "$(uname)" == "Linux" ]; then
+    if command_exists postgres; then
+        pg_bin_folder=$(dirname $(which postgres))
+    elif [ -d "/usr/lib/postgresql/*/bin" ]; then
+        pg_bin_folder="/usr/lib/postgresql/*/bin"
+    elif [ -d "/usr/local/pgsql/bin" ]; then
+        pg_bin_folder="/usr/local/pgsql/bin"
+    elif whereis postgres > /dev/null 2>&1; then
+        pg_bin_folder=$(dirname $(whereis postgres | awk '{print $2}'))
+    fi
+
+elif [ "$(uname)" == "Darwin" ]; then
+    if command_exists postgres; then
+        pg_bin_folder=$(dirname $(which postgres))
+    elif [ -d "/usr/local/opt/postgresql/bin" ]; then
+        pg_bin_folder="/usr/local/opt/postgresql/bin"
+    elif [ -d "/opt/homebrew/opt/postgresql/bin" ]; then
+        pg_bin_folder="/opt/homebrew/opt/postgresql/bin"
+    elif whereis postgres > /dev/null 2>&1; then
+        pg_bin_folder=$(dirname $(whereis postgres | awk '{print $2}'))
+    fi
+
+elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+    if command_exists postgres; then
+        pg_bin_folder=$(dirname $(which postgres))
+    elif [ -d "C:/Program Files/PostgreSQL/*/bin" ]; then
+        pg_bin_folder="C:/Program Files/PostgreSQL/*/bin"
+    fi
+
+else
+    echo "Unsupported operating system."
+    exit 1
+fi
+
+# Confirm PostgreSQL installation
+if [ -z "$pg_bin_folder" ]; then
+    echo "PostgreSQL executable not found. Please ensure PostgreSQL is installed correctly."
+    exit 1
+fi
+
+# Check if postgres data directory has already been initialized, if not, run initdb
+if [ -f "$postgres_path/PG_VERSION" ] && [ -f "$postgres_path/postgresql.conf" ] && [ -f "$postgres_path/pg_hba.conf" ]; then
+    echo "PostgreSQL data directory is already initialized."
+else
+    echo "Initializing PostgreSQL data directory..."
+    "$pg_bin_folder/initdb" -D "$postgres_path"
+fi
+
+# if (sudo -u postgres "$pg_bin_folder/postgres" -D "$postgres_path" -p 5454 >"$home_dir/.atp-devenv/pg.log") & pid=$!; then
+if ("$pg_bin_folder/pg_ctl" -D "$postgres_path" -l "$home_dir/.atp-devenv/pg.log" -o "-p 5454" start); then
+    echo "PostgreSQL started successfully."
+else
+    echo "Failed to start PostgreSQL."
+    exit 1
+fi
+
+# Wait for server to start
+"$pg_bin_folder/pg_isready" -h localhost -p 5454 -U postgres -d postgres
+
+psql -c "CREATE USER atp_devenv WITH PASSWORD 'atp_devenv';" -p 5454 postgres
+psql -c "ALTER USER atp_devenv CREATEDB;" -p 5454 postgres
+psql -c "CREATE DATABASE atp_devenv OWNER atp_devenv;" -p 5454 postgres
+psql -c "GRANT ALL PRIVILEGES ON DATABASE atp_devenv TO atp_devenv;" -p 5454 postgres
+
+# if kill $pid; then
+if ("$pg_bin_folder/pg_ctl" -D "$postgres_path" stop); then
+    echo "PostgreSQL stopped successfully."
+else
+    echo "Failed to stop PostgreSQL."
+    exit 1
+fi
+
 # Check for the presence of package managers
 npm_installed=false
 yarn_installed=false
@@ -60,21 +165,6 @@ fi
 # Confirm Go installation
 if ! command_exists go; then
     echo "Go is not installed. Please install it from https://go.dev/doc/install."
-    exit 1
-fi
-
-# Determine home directory based on the operating system
-if [ "$OSTYPE" == "msys" ] || [ "$OSTYPE" == "cygwin" ]; then
-    # Windows
-    home_dir=$(eval echo %USERPROFILE%)
-elif [ "$OSTYPE" == "linux-gnu" ]; then
-    # Linux
-    home_dir="$HOME"
-elif [ "$OSTYPE" == "darwin"* ]; then
-    # macOS
-    home_dir="$HOME"
-else
-    echo "Unsupported operating system."
     exit 1
 fi
 
